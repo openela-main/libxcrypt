@@ -1,0 +1,320 @@
+commit 8596e298f761c32cecff45424f5242cd14269292
+Author: Zack Weinberg <zackw@panix.com>
+Date:   Tue Aug 7 21:35:12 2018 -0400
+
+    Add configure option --disable-failure-tokens.
+    
+    When this option is given, crypt and crypt_r will return NULL on
+    failure, instead of a special "failure token" string that isn't the
+    hash of any passphrase.  This was the historical behavior of glibc,
+    FreeBSD libc, and several other implementations.
+
+diff --git a/configure.ac b/configure.ac
+index a22a5926bd82f729..23651f9c5c886107 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -152,6 +152,25 @@ AC_CHECK_FUNCS_ONCE([
+ ])
+ 
+ # Configure options.
++AC_ARG_ENABLE([failure-tokens],
++    AS_HELP_STRING(
++        [--disable-failure-tokens],
++        [Make crypt and crypt_r return NULL on failure, instead of a
++         special "failure token" string that isn't the hash of any
++         passphrase.  This matches the behavior of several other
++         crypt implementations, but will break programs that assume these
++         functions never return NULL.  crypt_rn and crypt_ra are not affected
++         by this option, and will always return NULL on failure.]
++    ),
++    [case "$enableval" in
++      yes) enable_failure_tokens=1;;
++       no) enable_failure_tokens=0;;
++        *) AC_MSG_ERROR([bad value ${enableval} for --enable-failure-tokens]);;
++     esac],
++    [enable_failure_tokens=1])
++AC_DEFINE_UNQUOTED([ENABLE_FAILURE_TOKENS], [$enable_failure_tokens],
++  [Define to 1 if crypt and crypt_r should return a "failure token" on
++   failure, or 0 if they should return NULL.])
+ 
+ AC_ARG_ENABLE([obsolete-api],
+     AS_HELP_STRING(
+diff --git a/crypt.c b/crypt.c
+index 9a3e19214e613097..839763afad14eaa9 100644
+--- a/crypt.c
++++ b/crypt.c
+@@ -235,7 +235,11 @@ crypt_r (const char *phrase, const char *setting, struct crypt_data *data)
+ {
+   make_failure_token (setting, data->output, sizeof data->output);
+   do_crypt (phrase, setting, data);
++#if ENABLE_FAILURE_TOKENS
+   return data->output;
++#else
++  return data->output[0] == '*' ? 0 : data->output;
++#endif
+ }
+ SYMVER_crypt_r;
+ #endif
+diff --git a/crypt_rn.3 b/crypt_rn.3
+index 24da44cfce19716b..d021c4ed4a046e04 100644
+--- a/crypt_rn.3
++++ b/crypt_rn.3
+@@ -204,17 +204,31 @@ multiple threads simultaneously, as long as a separate
+ object is used for each thread.
+ .PP
+ Upon error,
+-.B crypt
+-and
+-.B crypt_r
+-return a pointer to an
++.BR crypt_r ", " crypt_rn ", and " crypt_ra
++write an
+ .I invalid
+-hashed passphrase.
++hashed passphrase to the
++.I output
++field of their
++.I crypt_data
++object, and
++.B crypt
++writes an invalid hash to its static storage area.
+ This string will be shorter than 13 characters,
+ will begin with a \(oq\fB*\fR\(cq,
+ and will not compare equal to
+ .IR setting .
+-(This peculiar behavior is for compatibility
++.PP
++Upon error,
++.BR crypt_rn " and " crypt_ra
++return a null pointer.
++.BR crypt_r " and " crypt
++may also return a null pointer,
++or they may return a pointer to the invalid hash,
++depending on how
++.I libcrypt
++was configured.
++(The option to return the invalid hash is for compatibility
+ with old applications that assume that
+ .B crypt
+ cannot return a null pointer.
+@@ -222,15 +236,6 @@ See
+ .B "PORTABILITY NOTES"
+ below.)
+ .PP
+-.B crypt_rn
+-and
+-.B crypt_ra
+-also write an invalid hashed passphrase to the
+-.I output
+-field of their
+-.I crypt_data
+-object when they fail, but they return a null pointer.
+-.PP
+ All four functions set
+ .I errno
+ when they fail.
+diff --git a/test-badsalt.c b/test-badsalt.c
+index b2743373628b1f3f..3d2e47ac0e7647bd 100644
+--- a/test-badsalt.c
++++ b/test-badsalt.c
+@@ -222,12 +222,28 @@ check_crypt (const char *label, const char *fn,
+              const char *retval, const char *setting,
+              bool expected_to_succeed)
+ {
+-  /* crypt/crypt_r should never return null */
++#if ENABLE_FAILURE_TOKENS
++  /* crypt/crypt_r never return null when failure tokens are enabled */
+   if (!retval)
+     {
+       printf ("FAIL: %s/%s/%s: returned NULL\n", label, setting, fn);
+       return false;
+     }
++#else
++  if (expected_to_succeed && !retval)
++    {
++      printf ("FAIL: %s/%s/%s: returned NULL\n", label, setting, fn);
++      return false;
++    }
++  else if (!expected_to_succeed && retval)
++    {
++      printf ("FAIL: %s/%s/%s: returned %p, should be NULL\n",
++              label, setting, fn, (const void *)retval);
++      return false;
++    }
++  else if (!expected_to_succeed && !retval)
++    return true;
++#endif
+   if (!check_results (label, fn, retval, setting,
+                       expected_to_succeed))
+     return false;
+diff --git a/test-crypt-badargs.c b/test-crypt-badargs.c
+index 0e6af1626a605086..6be24a99ca7f9015 100644
+--- a/test-crypt-badargs.c
++++ b/test-crypt-badargs.c
+@@ -169,6 +169,14 @@ test_crypt_ra (const char *tag,
+   check (tag, expect, got);
+ }
+ 
++#if ENABLE_FAILURE_TOKENS
++# define FT0 "*0"
++# define FT1 "*1"
++#else
++# define FT0 0
++# define FT1 0
++#endif
++
+ /* PAGE should point to PAGESIZE bytes of read-write memory followed
+    by another PAGESIZE bytes of inaccessible memory.  */
+ 
+@@ -187,55 +195,55 @@ do_tests(char *page, size_t pagesize)
+   size_t i;
+ 
+   /* When SETTING is null, it shouldn't matter what PHRASE is.  */
+-  expect_no_fault ("0.0.crypt",    0,  0, "*0", test_crypt);
+-  expect_no_fault ("0.0.crypt_r",  0,  0, "*0", test_crypt_r);
++  expect_no_fault ("0.0.crypt",    0,  0, FT0, test_crypt);
++  expect_no_fault ("0.0.crypt_r",  0,  0, FT0, test_crypt_r);
+   expect_no_fault ("0.0.crypt_rn", 0,  0, 0,    test_crypt_rn);
+   expect_no_fault ("0.0.crypt_ra", 0,  0, 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("''.0.crypt",    "", 0, "*0", test_crypt);
+-  expect_no_fault ("''.0.crypt_r",  "", 0, "*0", test_crypt_r);
++  expect_no_fault ("''.0.crypt",    "", 0, FT0, test_crypt);
++  expect_no_fault ("''.0.crypt_r",  "", 0, FT0, test_crypt_r);
+   expect_no_fault ("''.0.crypt_rn", "", 0, 0,    test_crypt_rn);
+   expect_no_fault ("''.0.crypt_ra", "", 0, 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("ph.0.crypt",    phrase, 0, "*0", test_crypt);
+-  expect_no_fault ("ph.0.crypt_r",  phrase, 0, "*0", test_crypt_r);
++  expect_no_fault ("ph.0.crypt",    phrase, 0, FT0, test_crypt);
++  expect_no_fault ("ph.0.crypt_r",  phrase, 0, FT0, test_crypt_r);
+   expect_no_fault ("ph.0.crypt_rn", phrase, 0, 0,    test_crypt_rn);
+   expect_no_fault ("ph.0.crypt_ra", phrase, 0, 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("p1.0.crypt",    p1, 0, "*0", test_crypt);
+-  expect_no_fault ("p1.0.crypt_r",  p1, 0, "*0", test_crypt_r);
++  expect_no_fault ("p1.0.crypt",    p1, 0, FT0, test_crypt);
++  expect_no_fault ("p1.0.crypt_r",  p1, 0, FT0, test_crypt_r);
+   expect_no_fault ("p1.0.crypt_rn", p1, 0, 0,    test_crypt_rn);
+   expect_no_fault ("p1.0.crypt_ra", p1, 0, 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("p2.0.crypt",    p2, 0, "*0", test_crypt);
+-  expect_no_fault ("p2.0.crypt_r",  p2, 0, "*0", test_crypt_r);
++  expect_no_fault ("p2.0.crypt",    p2, 0, FT0, test_crypt);
++  expect_no_fault ("p2.0.crypt_r",  p2, 0, FT0, test_crypt_r);
+   expect_no_fault ("p2.0.crypt_rn", p2, 0, 0,    test_crypt_rn);
+   expect_no_fault ("p2.0.crypt_ra", p2, 0, 0,    test_crypt_ra);
+ 
+   /* Conversely, when PHRASE is null,
+      it shouldn't matter what SETTING is...  */
+-  expect_no_fault ("0.''.crypt",    0, "", "*0", test_crypt);
+-  expect_no_fault ("0.''.crypt_r",  0, "", "*0", test_crypt_r);
++  expect_no_fault ("0.''.crypt",    0, "", FT0,  test_crypt);
++  expect_no_fault ("0.''.crypt_r",  0, "", FT0,  test_crypt_r);
+   expect_no_fault ("0.''.crypt_rn", 0, "", 0,    test_crypt_rn);
+   expect_no_fault ("0.''.crypt_ra", 0, "", 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("0.'*'.crypt",    0, "*", "*0", test_crypt);
+-  expect_no_fault ("0.'*'.crypt_r",  0, "*", "*0", test_crypt_r);
++  expect_no_fault ("0.'*'.crypt",    0, "*", FT0,  test_crypt);
++  expect_no_fault ("0.'*'.crypt_r",  0, "*", FT0,  test_crypt_r);
+   expect_no_fault ("0.'*'.crypt_rn", 0, "*", 0,    test_crypt_rn);
+   expect_no_fault ("0.'*'.crypt_ra", 0, "*", 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("0.'*0'.crypt",    0, "*0", "*1", test_crypt);
+-  expect_no_fault ("0.'*0'.crypt_r",  0, "*0", "*1", test_crypt_r);
++  expect_no_fault ("0.'*0'.crypt",    0, "*0", FT1,  test_crypt);
++  expect_no_fault ("0.'*0'.crypt_r",  0, "*0", FT1,  test_crypt_r);
+   expect_no_fault ("0.'*0'.crypt_rn", 0, "*0", 0,    test_crypt_rn);
+   expect_no_fault ("0.'*0'.crypt_ra", 0, "*0", 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("0.'*1'.crypt",    0, "*1", "*0", test_crypt);
+-  expect_no_fault ("0.'*1'.crypt_r",  0, "*1", "*0", test_crypt_r);
++  expect_no_fault ("0.'*1'.crypt",    0, "*1", FT0,  test_crypt);
++  expect_no_fault ("0.'*1'.crypt_r",  0, "*1", FT0,  test_crypt_r);
+   expect_no_fault ("0.'*1'.crypt_rn", 0, "*1", 0,    test_crypt_rn);
+   expect_no_fault ("0.'*1'.crypt_ra", 0, "*1", 0,    test_crypt_ra);
+ 
+-  expect_no_fault ("0.p1.crypt",    0, p1, "*0", test_crypt);
+-  expect_no_fault ("0.p1.crypt_r",  0, p1, "*0", test_crypt_r);
++  expect_no_fault ("0.p1.crypt",    0, p1, FT0,  test_crypt);
++  expect_no_fault ("0.p1.crypt_r",  0, p1, FT0,  test_crypt_r);
+   expect_no_fault ("0.p1.crypt_rn", 0, p1, 0,    test_crypt_rn);
+   expect_no_fault ("0.p1.crypt_ra", 0, p1, 0,    test_crypt_ra);
+ 
+@@ -245,8 +253,8 @@ do_tests(char *page, size_t pagesize)
+      bug, but it's impractical to fix without breaking the property
+      that 'crypt' _never_ creates a failure token that is equal to the
+      setting string, which is more important than this corner case.  */
+-  expect_a_fault ("0.p2.crypt",    0, p2, "*0", test_crypt);
+-  expect_a_fault ("0.p2.crypt_r",  0, p2, "*0", test_crypt_r);
++  expect_a_fault ("0.p2.crypt",    0, p2, FT0,  test_crypt);
++  expect_a_fault ("0.p2.crypt_r",  0, p2, FT0,  test_crypt_r);
+   expect_a_fault ("0.p2.crypt_rn", 0, p2, 0,    test_crypt_rn);
+   expect_a_fault ("0.p2.crypt_ra", 0, p2, 0,    test_crypt_ra);
+ 
+@@ -257,9 +265,9 @@ do_tests(char *page, size_t pagesize)
+       strcpy (page, "p1.'");
+       strcat (page, settings[i]);
+       strcat (page, "'.crypt");
+-      expect_a_fault (page, p1, settings[i], "*0", test_crypt);
++      expect_a_fault (page, p1, settings[i], FT0,  test_crypt);
+       strcat (page, "_r");
+-      expect_a_fault (page, p1, settings[i], "*0", test_crypt_r);
++      expect_a_fault (page, p1, settings[i], FT0,  test_crypt_r);
+       strcat (page, "n");
+       expect_a_fault (page, p1, settings[i], 0,    test_crypt_rn);
+       page [strlen (page) - 1] = 'a';
+@@ -268,9 +276,9 @@ do_tests(char *page, size_t pagesize)
+       strcpy (page, "p2.'");
+       strcat (page, settings[i]);
+       strcat (page, "'.crypt");
+-      expect_a_fault (page, p2, settings[i], "*0", test_crypt);
++      expect_a_fault (page, p2, settings[i], FT0,  test_crypt);
+       strcat (page, "_r");
+-      expect_a_fault (page, p2, settings[i], "*0", test_crypt_r);
++      expect_a_fault (page, p2, settings[i], FT0,  test_crypt_r);
+       strcat (page, "n");
+       expect_a_fault (page, p2, settings[i], 0,    test_crypt_rn);
+       page [strlen (page) - 1] = 'a';
+@@ -279,8 +287,8 @@ do_tests(char *page, size_t pagesize)
+ 
+   /* Conversely, when PHRASE is valid, passing an invalid string as SETTING
+      should crash reliably.  */
+-  expect_a_fault ("ph.p2.crypt",    phrase, p2, "*0", test_crypt);
+-  expect_a_fault ("ph.p2.crypt_r",  phrase, p2, "*0", test_crypt_r);
++  expect_a_fault ("ph.p2.crypt",    phrase, p2, FT0,  test_crypt);
++  expect_a_fault ("ph.p2.crypt_r",  phrase, p2, FT0,  test_crypt_r);
+   expect_a_fault ("ph.p2.crypt_rn", phrase, p2, 0,    test_crypt_rn);
+   expect_a_fault ("ph.p2.crypt_ra", phrase, p2, 0,    test_crypt_ra);
+ 
+@@ -292,9 +300,9 @@ do_tests(char *page, size_t pagesize)
+       strcpy (page, "ph.'");
+       strcat (page, settings[i]);
+       strcat (page, ".crypt");
+-      expect_a_fault (page, phrase, p1, "*0", test_crypt);
++      expect_a_fault (page, phrase, p1, FT0, test_crypt);
+       strcat (page, "_r");
+-      expect_a_fault (page, phrase, p1, "*0", test_crypt_r);
++      expect_a_fault (page, phrase, p1, FT0, test_crypt_r);
+       strcat (page, "n");
+       expect_a_fault (page, phrase, p1, 0,    test_crypt_rn);
+       page [strlen (page) - 1] = 'a';
+diff --git a/test-crypt-bcrypt.c b/test-crypt-bcrypt.c
+index c984e4d47d8df2c6..bf149b405bd408c7 100644
+--- a/test-crypt-bcrypt.c
++++ b/test-crypt-bcrypt.c
+@@ -194,8 +194,12 @@ main (void)
+       errno = 0;
+       p = crypt (key, setting);
+       errnm = errno;
++#if ENABLE_FAILURE_TOKENS
+       match = strcmp (p, hash);
+-      if ((!ok && !errno) || strcmp (p, hash))
++#else
++      match = (ok ? strcmp (p, hash) : p != 0);
++#endif
++      if ((!ok && !errno) || match)
+         {
+           printf ("FAIL: %d/crypt.1: key=%s setting=%s: xhash=%s xerr=%d, "
+                   "p=%s match=%d err=%s\n",
