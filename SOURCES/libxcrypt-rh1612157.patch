@@ -1,0 +1,67 @@
+commit cc1806e214b89403152c2c53932d8d0b8aeb1e91
+Author: Björn Esser <besser82@fedoraproject.org>
+Date:   Sat Aug 4 13:02:03 2018 +0200
+
+    Add alias man-pages for other crypt functions.
+
+diff --git a/Makefile.am b/Makefile.am
+index 201dea53313e7054..1ea36121d085b55d 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -15,7 +15,8 @@ EXTRA_DIST = \
+ 	gen-map.awk gen-vers.awk gen-crypt-h.awk \
+ 	gen-hashes.awk sel-hashes.awk hashes.lst
+ 
+-notrans_dist_man3_MANS = crypt_rn.3 crypt_gensalt.3
++notrans_dist_man3_MANS = crypt.3 crypt_r.3 crypt_ra.3 \
++	crypt_rn.3 crypt_gensalt.3
+ notrans_dist_man5_MANS = crypt.5
+ 
+ nodist_include_HEADERS = crypt.h
+diff --git a/crypt.3 b/crypt.3
+new file mode 100644
+index 0000000000000000..430e48f320d6e8af
+--- /dev/null
++++ b/crypt.3
+@@ -0,0 +1 @@
++.so man3/crypt_rn.3
+diff --git a/crypt.5 b/crypt.5
+index 5db9c923cbd66e55..7fe46091f192b114 100644
+--- a/crypt.5
++++ b/crypt.5
+@@ -279,6 +279,8 @@ that will work on an old operating system that supports nothing else.
+ .hash "$3$" "\e$3\e$\e$[0-9a-f]{32}" unlimited 8 256 256 0 1
+ .SH SEE ALSO
+ .BR crypt (3),
++.BR crypt_r (3),
++.BR crypt_ra (3),
+ .BR crypt_rn (3),
+ .BR crypt_gensalt (3),
+ .BR getpwent (3),
+diff --git a/crypt_gensalt.3 b/crypt_gensalt.3
+index ebfff28db79a3c53..31097400e5cd2080 100644
+--- a/crypt_gensalt.3
++++ b/crypt_gensalt.3
+@@ -223,6 +223,8 @@ T}	Thread safety	MT-Safe
+ .SH SEE ALSO
+ .ad l
+ .BR crypt (3),
++.BR crypt_r (3),
++.BR crypt_ra (3),
+ .BR crypt_rn (3),
+ .BR getpass (3),
+ .BR getpwent (3),
+diff --git a/crypt_r.3 b/crypt_r.3
+new file mode 100644
+index 0000000000000000..430e48f320d6e8af
+--- /dev/null
++++ b/crypt_r.3
+@@ -0,0 +1 @@
++.so man3/crypt_rn.3
+diff --git a/crypt_ra.3 b/crypt_ra.3
+new file mode 100644
+index 0000000000000000..430e48f320d6e8af
+--- /dev/null
++++ b/crypt_ra.3
+@@ -0,0 +1 @@
++.so man3/crypt_rn.3
